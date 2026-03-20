@@ -1,13 +1,19 @@
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime
 import pandas as pd
 import websockets
 import traceback
+from dotenv import load_dotenv
 
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+EXECUTION_IP = os.getenv("EXECUTION_IP")
 
 def today_utc() -> pd.Timestamp:
     tz_info = datetime.now().astimezone().tzinfo
@@ -17,7 +23,7 @@ def today_utc() -> pd.Timestamp:
 
 
 class WebSpreaderListener:
-    AMAZON_WS_UPI = 'ws://54.249.138.8:8080/wsapi/strat/update'
+    AMAZON_WS_UPI = f'ws://{EXECUTION_IP}:8080/wsapi/strat/update'
 
     def __init__(self):
         self.listener_task = None

@@ -96,7 +96,7 @@ LP Hedging Strategy is a multi-part project designed to monitor liquidity pool (
 
    other ENV vars:
     TELEGRAM_TOKEN
-    EXECUTION_IP=54.249.138.8
+      EXECUTION_IP=your.execution.host
 
     ROOT_DIR=absolute_path\LP-hedging-strategy
     LP_HEDGE_LOG_DIR=absolute_path\LP-hedging-strategy\logs

@@ -30,11 +30,19 @@ def load_data():
         if HEDGE_ERROR_FLAGS_PATH.exists():
             with HEDGE_ERROR_FLAGS_PATH.open('r') as f:
                 error_flags['hedge'] = json.load(f)
-                if error_flags['hedge'].get("HEDGING_FETCHING_BITGET_ERROR", False):
+                hedge_fetch_error = (
+                    error_flags['hedge'].get("HEDGING_FETCHING_EXCHANGE_ERROR", False)
+                    or error_flags['hedge'].get("HEDGING_FETCHING_BITGET_ERROR", False)
+                )
+                if hedge_fetch_error:
                     errors['has_error'] = True
                     errors['hedging_error'] = True
-                    error_msg = error_flags['hedge'].get("bitget_error_message", "Failed to fetch Bitget hedging data")
-                    errors['messages'].append(f"Hedging Bitget error: {error_msg}")
+                    error_msg = (
+                        error_flags['hedge'].get("hedge_error_message")
+                        or error_flags['hedge'].get("bitget_error_message")
+                        or "Failed to fetch hedge exchange data"
+                    )
+                    errors['messages'].append(f"Hedging exchange error: {error_msg}")
                 if "last_updated_hedge" not in error_flags['hedge']:
                     logger.warning("last_updated_hedge missing in hedge_fetching_errors.json")
         else:
@@ -176,6 +184,8 @@ def load_ticker_mappings() -> dict:
     """Load ticker mappings from ticker_mappings.json or initialize with defaults."""
     default_mappings = {
         "SYMBOL_MAP": {},
+        "HEDGE_TOKENS_WITH_FACTOR_1000": {},
+        "HEDGE_TOKENS_WITH_FACTOR_10000": {},
         "BITGET_TOKENS_WITH_FACTOR_1000": {},
         "BITGET_TOKENS_WITH_FACTOR_10000": {}
     }
@@ -187,6 +197,15 @@ def load_ticker_mappings() -> dict:
                     logger.warning("ticker_mappings.json is empty, returning defaults")
                     return default_mappings
                 data = json.loads(content)
+                # Backward/forward compatibility between generic and legacy keys
+                if "HEDGE_TOKENS_WITH_FACTOR_1000" not in data and "BITGET_TOKENS_WITH_FACTOR_1000" in data:
+                    data["HEDGE_TOKENS_WITH_FACTOR_1000"] = data["BITGET_TOKENS_WITH_FACTOR_1000"]
+                if "HEDGE_TOKENS_WITH_FACTOR_10000" not in data and "BITGET_TOKENS_WITH_FACTOR_10000" in data:
+                    data["HEDGE_TOKENS_WITH_FACTOR_10000"] = data["BITGET_TOKENS_WITH_FACTOR_10000"]
+                if "BITGET_TOKENS_WITH_FACTOR_1000" not in data and "HEDGE_TOKENS_WITH_FACTOR_1000" in data:
+                    data["BITGET_TOKENS_WITH_FACTOR_1000"] = data["HEDGE_TOKENS_WITH_FACTOR_1000"]
+                if "BITGET_TOKENS_WITH_FACTOR_10000" not in data and "HEDGE_TOKENS_WITH_FACTOR_10000" in data:
+                    data["BITGET_TOKENS_WITH_FACTOR_10000"] = data["HEDGE_TOKENS_WITH_FACTOR_10000"]
                 # Ensure all expected keys exist
                 for key in default_mappings:
                     if key not in data:

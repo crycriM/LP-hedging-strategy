@@ -16,22 +16,20 @@ EXECUTION_IP = os.getenv("EXECUTION_IP")
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from .data_handler import BrokerHandler
-
 class BitgetOrderSender:
     AMAZON_URL = f'http://{EXECUTION_IP}:8080/api'
     AMAZON_UPI_SINGLE = AMAZON_URL + '/manualOrder/createOrUpdate'
     
     def __init__(self, broker_handler):
         """
-        Initialize the Bitget order sender with a pre-configured BrokerHandler
+        Initialize the hedge order sender with a pre-configured BrokerHandler
         
-        :param broker_handler: Instance of BrokerHandler configured for Bitget
+        :param broker_handler: Instance of BrokerHandler configured for hedge exchange
         """
         self.broker_handler = broker_handler
-        self.exchange = 'bitget_fut'
+        self.exchange = f"{self.broker_handler.market_trade}_fut"
         self.account_name = 'hedge1'
-        self.logger = logging.getLogger(f'bitget_order_sender-exchange:{self.exchange}-account_name:{self.account_name}')
+        self.logger = logging.getLogger(f'hedge_order_sender-exchange:{self.exchange}-account_name:{self.account_name}')
         
     async def _post_request(self, url, json_data):
         """Helper method to send POST requests"""
@@ -103,7 +101,7 @@ class BitgetOrderSender:
 
         config = {
             'symbol': symbol,
-            'exchange': 'bitget_fut',
+            'exchange': self.exchange,
             'account': self.account_name,
             'offset': 'Open',
             'useMargin': True,

@@ -8,14 +8,15 @@ import aiohttp
 from common.path_config import LOG_DIR, METEORA_LATEST_CSV, KRYSTAL_LATEST_CSV, HEDGEABLE_TOKENS_JSON, ENCOUNTERED_TOKENS_JSON
 from common.bot_reporting import TGMessenger
 from common.data_loader import load_hedgeable_tokens, load_encountered_tokens, load_ticker_mappings
-from hedge_monitoring.datafeed import bitgetfeed as bg
+from common.hedge_exchange import CcxtHedgeMarket, get_hedge_exchange_config
+from config import get_config
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(os.path.join(LOG_DIR, 'sync_bitget_hedgeable_tokens.log')),
+        logging.FileHandler(os.path.join(LOG_DIR, 'sync_hedgeable_tokens.log')),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -23,8 +24,8 @@ logger = logging.getLogger(__name__)
 
 mappings = load_ticker_mappings()
 SYMBOL_MAP=  mappings["SYMBOL_MAP"]
-BITGET_TOKENS_WITH_FACTOR_1000 =  mappings["BITGET_TOKENS_WITH_FACTOR_1000"]
-BITGET_TOKENS_WITH_FACTOR_10000 =  mappings["BITGET_TOKENS_WITH_FACTOR_10000"]
+HEDGE_TOKENS_WITH_FACTOR_1000 =  mappings.get("HEDGE_TOKENS_WITH_FACTOR_1000", mappings.get("BITGET_TOKENS_WITH_FACTOR_1000", {}))
+HEDGE_TOKENS_WITH_FACTOR_10000 =  mappings.get("HEDGE_TOKENS_WITH_FACTOR_10000", mappings.get("BITGET_TOKENS_WITH_FACTOR_10000", {}))
 
 
 def ensure_data_directory():
@@ -35,23 +36,21 @@ def ensure_data_directory():
     except Exception as e:
         logger.error(f"Error creating data directory {data_dir}: {str(e)}")
 
-async def fetch_bitget_markets() -> list:
-    """Fetch Bitget futures market symbols."""
+async def fetch_hedge_markets(hedge_exchange: str) -> list:
+    """Fetch hedge exchange perpetual market symbols."""
     try:
-        market = bg.BitgetMarket(account='H1')
-        markets = market.get_markets()
+        market = CcxtHedgeMarket(hedge_exchange, use_auth=False)
+        markets = await market.fetch_usdt_perp_symbols()
         if not markets:
-            logger.error("No markets returned")
-            await market._exchange_async.close()
+            logger.error(f"No markets returned from {hedge_exchange}")
+            await market.close()
             return []
 
-        # Filter futures markets
-        futures_symbols = [m['id'] for m in markets if m.get('type') in ['swap']]
-        await market._exchange_async.close()
-        logger.info(f"Fetched {len(futures_symbols)} Bitget futures market symbols")
-        return futures_symbols
+        await market.close()
+        logger.info(f"Fetched {len(markets)} {hedge_exchange} perpetual market symbols")
+        return markets
     except Exception as e:
-        logger.error(f"Error fetching Bitget futures markets: {str(e)}")
+        logger.error(f"Error fetching {hedge_exchange} perpetual markets: {str(e)}")
         return []
 
 async def fetch_lp_positions(platform: str) -> list:
@@ -119,10 +118,10 @@ def normalize_ticker(ticker: str) -> str:
     # Check all mapping dictionaries in priority order
     if ticker in SYMBOL_MAP:
         return SYMBOL_MAP[ticker].upper()
-    if ticker in BITGET_TOKENS_WITH_FACTOR_1000:
-        return BITGET_TOKENS_WITH_FACTOR_1000[ticker].upper()
-    if ticker in BITGET_TOKENS_WITH_FACTOR_10000:
-        return BITGET_TOKENS_WITH_FACTOR_10000[ticker].upper()
+    if ticker in HEDGE_TOKENS_WITH_FACTOR_1000:
+        return HEDGE_TOKENS_WITH_FACTOR_1000[ticker].upper()
+    if ticker in HEDGE_TOKENS_WITH_FACTOR_10000:
+        return HEDGE_TOKENS_WITH_FACTOR_10000[ticker].upper()
     return ticker
 
 async def send_telegram_alert(message: str):
@@ -137,18 +136,23 @@ async def send_telegram_alert(message: str):
         logger.error(f"Telegram alert failed: {e}")
 
 async def sync_hedgeable_tokens():
-    """Sync new LP tokens with Bitget perpetual futures."""
+    """Sync new LP tokens with configured hedge exchange perpetual futures."""
     logger.info("Starting hedgeable tokens sync...")
     ensure_data_directory()
+    config = get_config() or {}
+    hedge_cfg = get_hedge_exchange_config(config)
+    hedge_exchange = hedge_cfg["exchange"]
+    hedge_account = hedge_cfg["account"]
+    logger.info("Hedge exchange configuration: exchange=%s account=%s", hedge_exchange, hedge_account)
 
-    # Fetch Bitget futures markets
-    bitget_symbols = await fetch_bitget_markets()
-    if not bitget_symbols:
-        logger.error("No Bitget futures symbols fetched")
+    # Fetch hedge exchange perpetual markets
+    hedge_symbols = await fetch_hedge_markets(hedge_exchange)
+    if not hedge_symbols:
+        logger.error(f"No {hedge_exchange} perpetual symbols fetched")
         return
 
-    # Create set of Bitget symbols for exact matching
-    bitget_symbol_set = set(bitget_symbols)
+    # Create set of hedge symbols for exact matching
+    hedge_symbol_set = set(hedge_symbols)
 
     # Fetch LP positions
     meteora_positions = await fetch_lp_positions("meteora")
@@ -166,7 +170,7 @@ async def sync_hedgeable_tokens():
     encountered_contracts = set()
 
     # Map hedgeable tokens to tickers and CAs
-    ticker_to_symbol = {}  # base ticker -> Bitget symbol
+    ticker_to_symbol = {}  # base ticker -> hedge symbol
     for symbol, chains in hedgeable_tokens.items():
         base = symbol.split('USDT')[0].upper()
         ticker_to_symbol[base] = symbol
@@ -194,28 +198,29 @@ async def sync_hedgeable_tokens():
             continue
 
         normalized_ticker = normalize_ticker(ticker)
-        bitget_symbol = f"{normalized_ticker}USDT"
+        hedge_symbol = f"{normalized_ticker}USDT"
 
         # Add to encountered tokens if new
         if contract_address not in encountered_contracts:
-            if bitget_symbol not in encountered_tokens:
-                encountered_tokens[bitget_symbol] = {}
-            if chain not in encountered_tokens[bitget_symbol]:
-                encountered_tokens[bitget_symbol][chain] = []
-            if contract_address not in encountered_tokens[bitget_symbol][chain]:
-                encountered_tokens[bitget_symbol][chain].append(contract_address)
+            if hedge_symbol not in encountered_tokens:
+                encountered_tokens[hedge_symbol] = {}
+            if chain not in encountered_tokens[hedge_symbol]:
+                encountered_tokens[hedge_symbol][chain] = []
+            if contract_address not in encountered_tokens[hedge_symbol][chain]:
+                encountered_tokens[hedge_symbol][chain].append(contract_address)
                 encountered_contracts.add(contract_address)
                 encountered_updated = True
                 logger.info(f"New token encountered: {ticker} ({contract_address}) on {chain}")
 
-                # Check if token is non-hedgeable (not in Bitget symbols)
-                if bitget_symbol not in bitget_symbol_set:
+                # Check if token is non-hedgeable (not in hedge exchange symbols)
+                if hedge_symbol not in hedge_symbol_set:
                     await send_telegram_alert(
                         f"🚨 New Non-Hedgeable Token Encountered 🚨:  \n"
                         f" Ticker: {normalized_ticker} \n"
                         f" Contract Address: {contract_address} \n"
                         f" Chain: {chain} \n"
-                        f"🚨 Action: Check Bitget for alternative ticker. 🚨"
+                        f" Hedge Exchange: {hedge_exchange} \n"
+                        f"🚨 Action: Check {hedge_exchange} for alternative ticker. 🚨"
                     )
 
         # Skip if CA already in hedgeable tokens for this chain
@@ -230,40 +235,42 @@ async def sync_hedgeable_tokens():
 
         # Check if ticker matches an existing hedgeable token
         if normalized_ticker in ticker_to_symbol:
-            bitget_symbol = ticker_to_symbol[normalized_ticker]
-            if bitget_symbol not in hedgeable_tokens:
-                hedgeable_tokens[bitget_symbol] = {}
-            if chain not in hedgeable_tokens[bitget_symbol]:
-                hedgeable_tokens[bitget_symbol][chain] = []
-            if contract_address not in hedgeable_tokens[bitget_symbol][chain]:
-                hedgeable_tokens[bitget_symbol][chain].append(contract_address)
+            hedge_symbol = ticker_to_symbol[normalized_ticker]
+            if hedge_symbol not in hedgeable_tokens:
+                hedgeable_tokens[hedge_symbol] = {}
+            if chain not in hedgeable_tokens[hedge_symbol]:
+                hedgeable_tokens[hedge_symbol][chain] = []
+            if contract_address not in hedgeable_tokens[hedge_symbol][chain]:
+                hedgeable_tokens[hedge_symbol][chain].append(contract_address)
                 new_tokens_added = True
-                logger.info(f"Added new CA for existing token: {normalized_ticker} ({contract_address}) on {chain}, matched {bitget_symbol}")
+                logger.info(f"Added new CA for existing token: {normalized_ticker} ({contract_address}) on {chain}, matched {hedge_symbol}")
                 await send_telegram_alert(
                     f" 🚨 New Contract Address for Existing Token: 🚨 \n"
                     f" Ticker: {normalized_ticker} \n"
                     f" Contract Address: {contract_address} \n"
                     f" Chain: {chain} \n"
-                    f" Bitget Symbol: {bitget_symbol}"
+                    f" Hedge Exchange: {hedge_exchange} \n"
+                    f" Hedge Symbol: {hedge_symbol}"
                 )
             continue
 
-        # Exact match with Bitget
-        if bitget_symbol in bitget_symbol_set:
-            if bitget_symbol not in hedgeable_tokens:
-                hedgeable_tokens[bitget_symbol] = {}
-            if chain not in hedgeable_tokens[bitget_symbol]:
-                hedgeable_tokens[bitget_symbol][chain] = []
-            if contract_address not in hedgeable_tokens[bitget_symbol][chain]:
-                hedgeable_tokens[bitget_symbol][chain].append(contract_address)
+        # Exact match with hedge exchange
+        if hedge_symbol in hedge_symbol_set:
+            if hedge_symbol not in hedgeable_tokens:
+                hedgeable_tokens[hedge_symbol] = {}
+            if chain not in hedgeable_tokens[hedge_symbol]:
+                hedgeable_tokens[hedge_symbol][chain] = []
+            if contract_address not in hedgeable_tokens[hedge_symbol][chain]:
+                hedgeable_tokens[hedge_symbol][chain].append(contract_address)
                 new_tokens_added = True
-                logger.info(f"Added new hedgeable token: {normalized_ticker} ({contract_address}) on {chain}, matched {bitget_symbol}")
+                logger.info(f"Added new hedgeable token: {normalized_ticker} ({contract_address}) on {chain}, matched {hedge_symbol}")
                 await send_telegram_alert(
                     f" 🚨 New Hedgeable Token Added: 🚨\n"
                     f" Ticker: {normalized_ticker} \n"
                     f" Contract Address: {contract_address} \n"
                     f" Chain: {chain} \n"
-                    f" 🚨 Matched Bitget Symbol: {bitget_symbol} 🚨"
+                    f" Hedge Exchange: {hedge_exchange} \n"
+                    f" 🚨 Matched Hedge Symbol: {hedge_symbol} 🚨"
                 )
 
     # Save updated files

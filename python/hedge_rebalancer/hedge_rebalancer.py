@@ -4,8 +4,8 @@ import sys
 import csv
 from datetime import datetime
 import json
-from .datafeed import bitgetfeed as bg
-from .datafeed.broker_handler import BrokerHandler
+from datafeed import bitgetfeed as bg
+from datafeed.broker_handler import BrokerHandler
 import asyncio
 from pathlib import Path
 from config import get_config

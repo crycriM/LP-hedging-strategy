@@ -61,11 +61,11 @@ LP Hedging Strategy is a multi-part project designed to monitor liquidity pool (
       ```bash
         python -m LP_metrics_fetching.tvl_fetcher 
 
-   2a. **run hedge-monitoring for fetching active hedge positions on Bitget:**
+      2a. **run hedge-monitoring for fetching active hedge positions on configured hedge exchange:**
         ```bash
-        python -m hedge_monitoring.sync_bitget_hedgeable_tokens 
+         python -m hedge_monitoring.sync_hedgeable_tokens 
 
-        python -m hedge_monitoring.bitget_position_fetcher
+         python -m hedge_monitoring.hedge_position_fetcher
 
    2b. **run hedge-rebalancer to compute which positions needs rebalancing**
         ```bash

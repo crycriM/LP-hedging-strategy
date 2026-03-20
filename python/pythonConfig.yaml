@@ -1,5 +1,11 @@
 # Configuration file for Python modules 
 
+hedge:
+  # Supported values: bitget, hyperliquid
+  exchange: bitget
+  # Optional account selector for adapters that support account routing
+  account: H1
+
 hedge_rebalancer:
   # Triggers for initiating rebalancing actions
   triggers:

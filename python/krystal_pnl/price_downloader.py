@@ -23,7 +23,7 @@ from typing import List, Tuple, Optional, Set
 import pandas as pd
 from tqdm import tqdm
 
-from .datafeed.bitgetfeed import BitgetMarket  
+from datafeed.bitgetfeed import BitgetMarket
 from .scan_tickers import build_ticker_timewindows
 
 

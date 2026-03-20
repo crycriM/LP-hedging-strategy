@@ -1,23 +1,21 @@
 import asyncio
-from hedge_monitoring.datafeed import bitgetfeed as bg
 import sys
-import os
 from dotenv import load_dotenv
 import csv
 from datetime import datetime
 import logging
 import json
-from pathlib import Path
 from config import get_config
 from common.path_config import LOG_DIR, HEDGING_HISTORY_CSV, HEDGING_LATEST_CSV, HEDGE_ERROR_FLAGS_PATH
 from common.bot_reporting import TGMessenger
+from common.hedge_exchange import CcxtHedgeMarket, get_hedge_exchange_config
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(LOG_DIR / 'bitget_position_fetcher.log'),
+        logging.FileHandler(LOG_DIR / 'hedge_position_fetcher.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -41,8 +39,10 @@ def load_error_flags():
     except Exception as e:
         logger.error(f"Error reading error flags from {HEDGE_ERROR_FLAGS_PATH}: {str(e)}")
     return {
+        "HEDGING_FETCHING_EXCHANGE_ERROR": False,
         "HEDGING_FETCHING_BITGET_ERROR": False,
         "last_updated_hedge": "",
+        "hedge_error_message": "",
         "bitget_error_message": ""
     }
 
@@ -61,43 +61,29 @@ def update_error_flags(flags: dict):
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-async def fetch_4hr_funding_rate(market, symbol):
+async def fetch_4hr_funding_rate(market: CcxtHedgeMarket, symbol: str):
     """Fetch the current funding rate for a symbol."""
     try:
-        # Manually convert raw symbol (e.g., 'POLUSDT') to unified CCXT format (e.g., 'POL/USDT:USDT')
-        if symbol.endswith('USDT'):
-            base = symbol[:-4]  # Remove 'USDT' suffix
-            unified_symbol = f"{base}/USDT:USDT"
-        else:
-            logger.warning(f"{symbol} does not end with 'USDT'; cannot convert to unified format")
-            return 0.0
-
-        logger.info(f"Converted {symbol} to unified symbol: {unified_symbol}")
-
-        # Fetch funding rate using unified symbol
-        funding_data = await market.read_funding(symbol=unified_symbol)
-        if not funding_data:
-            logger.warning(f"No funding rate data found for {unified_symbol}")
-            return 0.0
-
-        # Extract the funding rate
-        funding_rate = funding_data.get('fundingRate', 0.0)
-        logger.info(f"Funding rate for {unified_symbol}: {funding_rate}")
+        funding_rate = await market.fetch_funding_rate(symbol=symbol)
+        logger.info(f"Funding rate for {symbol}: {funding_rate}")
         return float(funding_rate)
     
     except Exception as e:
         error_msg = f"Error fetching funding rate for {symbol}: {str(e)}"
         logger.error(error_msg)
+        exchange_is_bitget = market.exchange_id == 'bitget'
         error_flags = load_error_flags()
         error_flags.update({
-            "HEDGING_FETCHING_BITGET_ERROR": True,
+            "HEDGING_FETCHING_EXCHANGE_ERROR": True,
+            "HEDGING_FETCHING_BITGET_ERROR": exchange_is_bitget,
+            "hedge_error_message": error_msg,
             "bitget_error_message": error_msg
         })
         update_error_flags(error_flags)
         return 0.0
 
 async def fetch_and_print_positions():
-    logger.info("Starting Bitget position fetcher...")
+    logger.info("Starting hedge position fetcher...")
     
     # Ensure data directory exists
     ensure_data_directory()
@@ -105,40 +91,31 @@ async def fetch_and_print_positions():
     # Initialize error flags
     error_flags = load_error_flags()
     error_flags.update({
+        "HEDGING_FETCHING_EXCHANGE_ERROR": False,
         "HEDGING_FETCHING_BITGET_ERROR": False,
+        "hedge_error_message": "",
         "bitget_error_message": ""
     })
     update_error_flags(error_flags)
     
     load_dotenv()
-    api_key = os.getenv("BITGET_HEDGE1_API_KEY")
-    api_secret = os.getenv("BITGET_HEDGE1_API_SECRET")
-    api_password = os.getenv("BITGET_API_PASSWORD")
-    if not all([api_key, api_secret, api_password]):
-        error_msg = "One or more required environment variables are missing."
-        logger.error(error_msg)
-        error_flags = load_error_flags()
-        error_flags.update({
-            "HEDGING_FETCHING_BITGET_ERROR": True,
-            "bitget_error_message": error_msg
-        })
-        update_error_flags(error_flags)
-        raise ValueError(error_msg)
-
-    market = bg.BitgetMarket(account='H1')
-
     config = get_config()
+    hedge_config = get_hedge_exchange_config(config)
+    hedge_exchange = hedge_config["exchange"]
+    hedge_account = hedge_config["account"]
+    logger.info("Hedge exchange configuration: exchange=%s account=%s", hedge_exchange, hedge_account)
     funding_threshold = config.get('hedge_monitoring', {}).get('funding_rate_alert_threshold', -20)
+    market = CcxtHedgeMarket(hedge_exchange, use_auth=True)
     
     try:
         
-        logger.info("Fetching positions from Bitget...")
+        logger.info(f"Fetching positions from {hedge_exchange}...")
         # Process positions
-        positions = await market.get_positions_async()
+        positions = await market.fetch_positions()
         
         current_time = datetime.utcnow().isoformat()
         position_data = []
-        for symbol, (qty, amount, entry_price, entry_ts) in positions.items():
+        for symbol, (qty, amount, entry_price, _) in positions.items():
             # Fetch current funding rate
             funding_rate = await fetch_4hr_funding_rate(market, symbol)
             
@@ -146,7 +123,8 @@ async def fetch_and_print_positions():
             if funding_rate * 10000 <= funding_threshold: 
                 try:
                     alert_msg = (
-                        f"⚠️ Bitget Funding Rate Alert ⚠️\n"
+                        f"⚠️ Hedge Funding Rate Alert ⚠️\n"
+                        f"Exchange: {hedge_exchange}\n"
                         f"Symbol: {symbol}\n"
                         f"Funding Rate: {funding_rate* 10000:.1f} bips\n"
                         f"Hedge position USD amount: {(amount):.2f}\n"
@@ -189,8 +167,10 @@ async def fetch_and_print_positions():
         # Update last_updated_hedge on successful completion
         error_flags = load_error_flags()
         error_flags.update({
-            "HEDGING_FETCHING_BITGET_ERROR": False,
+            "HEDGING_FETCHING_EXCHANGE_ERROR": False,
+            "HEDGING_FETCHING_BITGET_ERROR": hedge_exchange == 'bitget',
             "last_updated_hedge": current_time,
+            "hedge_error_message": "",
             "bitget_error_message": ""
         })
         update_error_flags(error_flags)
@@ -200,13 +180,15 @@ async def fetch_and_print_positions():
         logger.error(error_msg)
         error_flags = load_error_flags()
         error_flags.update({
-            "HEDGING_FETCHING_BITGET_ERROR": True,
+            "HEDGING_FETCHING_EXCHANGE_ERROR": True,
+            "HEDGING_FETCHING_BITGET_ERROR": hedge_exchange == 'bitget',
+            "hedge_error_message": error_msg,
             "bitget_error_message": error_msg
         })
         update_error_flags(error_flags)
         raise
     finally:
-        await market._exchange_async.close()
+        await market.close()
         logger.info("Exchange connection closed.")
 
 if __name__ == "__main__":

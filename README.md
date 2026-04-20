@@ -1,156 +1,341 @@
 # LP Hedging Strategy
 
-LP Hedging Strategy is a multi-part project designed to monitor liquidity pool (LP) positions and implement automated hedging on BitGet and rebalancing strategies across various blockchain networks. The project is divided into two main components:
+Automated monitoring, hedging, and rebalancing pipeline for decentralized exchange (DEX) liquidity pool positions, with short hedge execution on centralized exchanges (BitGet / HyperLiquid).
 
-- **lp-monitor (TypeScript/Node.js):**  
-  This module retrieves and processes LP positions from decentralized exchanges on Solana and Ethereum. It gathers data, calculates profit & loss (PnL), and generates CSV reports for tracking the latest positions and overall liquidity profiles.
+## Table of Contents
 
-- **Python Modules:**  
-  Packages for hedge monitoring, hedge rebalancing, and hedge automation. 
+- [Features](#features)
+- [Architecture](#architecture)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Usage](#usage)
+- [Pipeline Overview](#pipeline-overview)
+- [Output Files](#output-files)
+- [License](#license)
+- [Disclaimer](#disclaimer)
+
+---
 
 ## Features
 
-- **Multi-Chain Support:**  
-  Track LP positions on Solana (only Meteora via meteora API) and EVM chains (via Krystal API).
+- **Multi-Chain LP Tracking**
+  Solana (Meteora DLMM via on-chain RPC + Meteora API) and EVM chains (Ethereum, Polygon, BSC, Arbitrum, Sonic, Base) via the Krystal API.
 
-- **Real-Time Position Tracking:**  
-  Retrieve LP positions from multiple wallet addresses, calculate PnL (only for meteora positions), and generate CSV reports.
+- **PnL Calculation**
+  Per-position profit & loss for Meteora LPs and Krystal V3 pools, with historical CSV archival.
 
-- **Automated Hedging & Rebalancing:**  
-  Python scripts to monitor, hedge, and rebalance positions automatically based on market changes.
+- **TVL & Volume Enrichment**
+  Fetches pool-level TVL and volume data from the GeckoTerminal API.
 
+- **Automated Hedging**
+  Syncs hedgeable tokens, fetches active hedge positions from BitGet or HyperLiquid, and places rebalancing orders automatically.
 
+- **Smart Rebalancing**
+  Configurable deviation triggers (over/under-hedged thresholds) with optional quantity smoothing over a lookback window.
 
-## Installation & Setup
+- **WebSocket Order Management**
+  Real-time order monitoring and execution via exchange WebSocket connections.
 
-0. **Clone repository:**
-   ```bash
-   cd <your repo path>
-   git clone <repo github url>
+- **Funding Rate Alerts**
+  Alerts when funding rates cross a configurable threshold (in basis points).
 
-### For lp-monitor (Node.js/TypeScript)
+- **Visualization Dashboard**
+  Built-in webapp (`display_results`) for inspecting positions, hedge status, and rebalancing decisions.
 
-1. **Install Dependencies:**
-   ```bash
-   cd lp-monitor
-   npm install
+---
 
-2. **Build project:**
-   ```bash
-   npm run build
+## Architecture
 
-3. **Run project:**
-   ```bash
-   npm start
+```
+.
+├── lp-monitor/                    # TypeScript / Node.js — LP position fetching & PnL
+│   ├── src/
+│   │   ├── chains/                # Chain-specific adapters (Solana, EVM)
+│   │   ├── dexes/                 # DEX integrations (Meteora, etc.)
+│   │   ├── services/              # API / data services
+│   │   ├── utils/                 # Shared utilities
+│   │   ├── config.ts              # TS environment config
+│   │   ├── index.ts               # Main entry — fetch positions
+│   │   └── meteoraCalculations.ts # Meteora PnL computations
+│   ├── lpMonitorConfig.yaml       # Wallet addresses, chains, RPC
+│   └── package.json
+│
+├── python/                        # Python — hedging pipeline
+│   ├── LP_metrics_fetching/       # TVL / volume from GeckoTerminal API
+│   ├── hedge_monitoring/          # Sync hedgeable tokens + fetch active hedges
+│   ├── krystal_pnl/               # Krystal LP PnL calculations
+│   ├── hedge_rebalancer/          # Compute rebalance actions + smoothing
+│   ├── hedge_automation/          # Execute hedge orders (WS + REST)
+│   ├── common/                    # Shared utils, exchange adapters, reporting
+│   ├── ui/                        # Table rendering, ticker mapping
+│   ├── config/                    # Token lists, ticker mappings (JSON)
+│   ├── config.py                  # YAML config loader
+│   ├── display_results.py         # Webapp dashboard
+│   └── pythonConfig.yaml          # Python pipeline configuration
+│
+├── setup.py                       # Python package install
+├── .env.example                   # Environment variable template
+└── README.md
+```
 
-4. **Run Pnl calculations for meteora**
-   ```bash
-   npm run pnlMeteora
+---
 
-### For python/various-hedging-tools (Python)
+## Prerequisites
 
-1. **install the tools as modules from the root directory (where setup.py is located):**
-   ```bash
-   pip install -e .
+| Requirement | Version |
+|---|---|
+| Node.js | >= 18 |
+| npm | >= 9 |
+| Python | >= 3.10 |
+| pip | >= 22 |
+| Git | any |
 
-2. **run hedging tools, from the python/ folder which is the base dir for the python packages**
-   ```bash
-   cd python
+You also need:
+- A **BitGet** or **HyperLiquid** account with API credentials (key, secret, passphrase)
+- A **Solana RPC endpoint** (public or private)
+- (Optional) A **Telegram bot** token for notifications
 
-   2. ** fetch tvl and volume data from gecko terminal API **
-      ```bash
-        python -m LP_metrics_fetching.tvl_fetcher 
+---
 
-      2a. **run hedge-monitoring for fetching active hedge positions on configured hedge exchange:**
-        ```bash
-         python -m hedge_monitoring.sync_hedgeable_tokens 
+## Installation
 
-         python -m hedge_monitoring.hedge_position_fetcher
+### 1. Clone the repository
 
-   2b. **run hedge-rebalancer to compute which positions needs rebalancing**
-        ```bash
-        python -m hedge_rebalancer.hedge_rebalancer
+```bash
+git clone https://github.com/crycriM/LP-hedging-strategy.git
+cd LP-hedging-strategy
+```
 
-   2c. **run krystal_pnl workflow **
-        ```bash
-        python -m krystal_pnl.run_krystal_pnl
+### 2. lp-monitor (TypeScript / Node.js)
 
-   2c. **run auto hedging workflow **
-        ```bash
-        python -m hedge_automation.auto_hedge
+```bash
+cd lp-monitor
+npm install
+npm run build
+```
 
-3. **run simple visualization webapp:**
-    ```bash
-    python -m display_results
+### 3. Python modules
 
+From the repository root (where `setup.py` is located):
 
-### Configuration
+```bash
+pip install -e .
+```
 
-1. **Configure Environment:**
-   Update the configuration in config.ts or set the environment variables (wallet addresses, API keys, output folders paths etc.).
+### 4. Environment variables
 
-   ENV vars for lp-monitor:
-    BITGET_HEDGE1_API_KEY=...
-    BITGET_HEDGE1_API_SECRET=...
-    BITGET_API_PASSWORD=...
+```bash
+cp .env.example .env
+# Edit .env with your API keys and paths
+```
 
-   other ENV vars:
-    TELEGRAM_TOKEN
-      EXECUTION_IP=your.execution.host
+---
 
-    ROOT_DIR=absolute_path\LP-hedging-strategy
-    LP_HEDGE_LOG_DIR=absolute_path\LP-hedging-strategy\logs
-    LP_HEDGE_DATA_DIR=absolute_path\LP-hedging-strategy\lp-data
-    PYTHON_YAML_CONFIG_PATH=absolute_path\LP-hedging-strategy\python\config.yaml
+## Configuration
 
-2. **Configure yaml files**
+### lp-monitor — `lp-monitor/lpMonitorConfig.yaml`
 
-   # lp-monitor configuration: /lp-monitor/lpMonitorConfig.yaml
+```yaml
+# Solana RPC endpoint
+rpc_endpoint: "https://your-solana-rpc.example.com"
 
-      # insert krystal chain id for what blockchains to monitor
-      krystal_chain_ids:
-         - "1" # Ethereum
-         - "137" # Polygon
-         - "56" # BSC
-         - "42161" # Arbitrum
-         - "146" # Sonic
-         - "8453" # Base
+# Wallet addresses to monitor
+solana_wallet_addresses:
+  - "sol_addr_1"
+  - "sol_addr_2"
 
-      # insert desired solana rpc to connect to
-      rpc_endpoint: "https://rpc-proxy.segfaultx0.workers.dev"
+evm_wallet_addresses:
+  - "evm_addr_1"
+  - "evm_addr_2"
 
-      # insert desired solana and evm wallets to monitor
-      solana_wallet_addresses:
-         - "sol_addr_1"
-         - "sol_addr_2"
+# Krystal chain IDs to scan for EVM LPs
+krystal_chain_ids:
+  - "1"      # Ethereum
+  - "137"    # Polygon
+  - "56"     # BSC
+  - "42161"  # Arbitrum
+  - "146"    # Sonic
+  - "8453"   # Base
 
-      evm_wallet_addresses:
-         - "evm_addr_1"
-         - "evm_addr_2"
+# Krystal vault positions (optional)
+krystal_vault_wallet_chain_ids:
+  - wallet: "vault_addr_1"
+    chains: ["137"]
+    vault_share: 0.915
+  - wallet: "vault_addr_2"
+    chains: ["8453"]
+    vault_share: 1.0
+```
 
-      
-      # insert desired krystal vaults to monitor, with respective krystal chain id and vault share
-      krystal_vault_wallet_chain_ids:
-      - wallet: "vault_addr_1"
-         chains: ["137"]
-         vault_share: 0.915
-      - wallet: "vault_addr_2"
-         chains: ["8453"]
-         vault_share: 1
+### Python pipeline — `python/pythonConfig.yaml`
 
-   # python code configuration /python/pythonConfig.yaml
+```yaml
+hedge:
+  exchange: bitget           # Supported: bitget, hyperliquid
+  account: H1                # Account selector for multi-account setups
 
-      # Automatic Hedge triggers configuration
-      hedge_rebalancer:
+hedge_rebalancer:
+  triggers:
+    positive: 0.2            # Rebalance if under-hedged by > 20%
+    negative: -0.2           # Rebalance if over-hedged by > 20%
+    min_usd: 200             # Minimum USD deviation to trigger
+  smoother:
+    use_smoothed_qty: true
+    smoothing_lookback_h: 36 # Hours to average position quantities
 
-         # Triggers for initiating rebalancing actions
-         triggers:
-            # Positive trigger: underhedged pctg
-            positive: 0.02
-            # Negative trigger: overhedged pctg
-            negative: -0.02
-            # minimum value to trigger a rebalance
-            min_usd: 200
+hedge_monitoring:
+  funding_rate_alert_threshold: -20  # Alert when funding rate < -20 bips
+```
 
+### Environment variables
 
+See [`.env.example`](.env.example) for the full list. Key variables:
 
+| Variable | Description |
+|---|---|
+| `BITGET_HEDGE1_API_KEY` | BitGet API key |
+| `BITGET_HEDGE1_API_SECRET` | BitGet API secret |
+| `BITGET_API_PASSWORD` | BitGet API passphrase |
+| `TELEGRAM_TOKEN` | Telegram bot token for notifications |
+| `EXECUTION_IP` | Remote execution host (optional) |
+| `ROOT_DIR` | Absolute path to this repository |
+| `LP_HEDGE_LOG_DIR` | Path for log output |
+| `LP_HEDGE_DATA_DIR` | Path for CSV data output |
+| `PYTHON_YAML_CONFIG_PATH` | Path to `pythonConfig.yaml` |
+
+---
+
+## Usage
+
+### lp-monitor commands
+
+```bash
+cd lp-monitor
+
+# Fetch LP positions from all configured chains
+npm start
+
+# Run Meteora PnL calculations
+npm run pnlMeteora
+```
+
+### Python pipeline commands
+
+All commands are run from the `python/` directory:
+
+```bash
+cd python
+```
+
+**Step 1 — Enrich with TVL / volume data**
+
+```bash
+python -m LP_metrics_fetching.tvl_fetcher
+```
+
+**Step 2 — Sync hedgeable tokens & fetch hedge positions**
+
+```bash
+python -m hedge_monitoring.sync_hedgeable_tokens
+python -m hedge_monitoring.hedge_position_fetcher
+```
+
+**Step 3 — Compute rebalance actions**
+
+```bash
+python -m hedge_rebalancer.hedge_rebalancer
+```
+
+**Step 4 — Compute Krystal PnL**
+
+```bash
+python -m krystal_pnl.run_krystal_pnl
+```
+
+**Step 5 — Execute automated hedging**
+
+```bash
+python -m hedge_automation.auto_hedge
+```
+
+**Dashboard — Visualization webapp**
+
+```bash
+python -m display_results
+```
+
+---
+
+## Pipeline Overview
+
+The modules are designed to run in sequence. A typical automated workflow:
+
+```
+┌──────────────────────┐
+│  lp-monitor          │  Fetch LP positions (Solana + EVM)
+│  npm start           │
+└──────────┬───────────┘
+           │
+           ▼
+┌──────────────────────┐
+│  LP_metrics_fetching │  Enrich with TVL / volume from GeckoTerminal
+│  tvl_fetcher         │
+└──────────┬───────────┘
+           │
+           ▼
+┌──────────────────────┐
+│  hedge_monitoring    │  Sync hedgeable tokens + fetch active hedge positions
+│  sync + fetch        │
+└──────────┬───────────┘
+           │
+           ▼
+┌──────────────────────┐
+│  hedge_rebalancer    │  Compute deviations, apply quantity smoothing,
+│  rebalancer          │  generate rebalance orders
+└──────────┬───────────┘
+           │
+           ▼
+┌──────────────────────┐
+│  hedge_automation    │  Execute / cancel hedge orders via WebSocket + REST
+│  auto_hedge          │
+└──────────┬───────────┘
+           │
+           ▼
+┌──────────────────────┐
+│  display_results     │  Webapp dashboard for monitoring
+└──────────────────────┘
+```
+
+---
+
+## Output Files
+
+All data files are written to `$LP_HEDGE_DATA_DIR` (default: `<repo_root>/lp-data/`):
+
+| File | Description |
+|---|---|
+| `LP_meteora_positions_latest.csv` | Current Meteora LP positions |
+| `LP_krystal_positions_latest.csv` | Current Krystal EVM LP positions |
+| `LP_positions_smoothed.csv` | Position quantities after smoothing |
+| `hedging_positions_latest.csv` | Active hedge positions on exchange |
+| `rebalancing_results.csv` | Rebalance recommendations |
+| `position_pnl_results.csv` | Meteora PnL per position |
+| `krystal_pnl_by_pool.csv` | Krystal PnL per pool |
+| `active_pools.csv` | TVL & volume enriched pool data |
+| `automatic_order_monitor.csv` | Automated hedge order tracking |
+| `manual_order_monitor.csv` | Manual order tracking |
+
+History files are appended on each run (e.g. `LP_meteora_positions_history.csv`).
+
+---
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+
+---
+
+## Disclaimer
+
+This software is provided for educational and research purposes only. It interacts with real financial instruments (CEX perpetual futures) and DeFi protocols. Use at your own risk. The authors are not responsible for any financial losses incurred through the use of this software. This is not financial advice. Always test with paper-trading or small positions before deploying significant capital.

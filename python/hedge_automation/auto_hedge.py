@@ -11,6 +11,8 @@ from hedge_automation.order_manager import OrderManager
 from common.utils import execute_hedge_trade
 from hedge_automation.ws_manager import ws_manager
 from common.bot_reporting import TGMessenger
+from config import get_config
+from common.hedge_exchange import get_hedge_exchange_config
 
 # Configure logging
 logging.basicConfig(
@@ -27,11 +29,15 @@ logger = logging.getLogger(__name__)
 order_manager = OrderManager()
 order_sender = order_manager.get_order_sender()
 
+_hedge_cfg = get_hedge_exchange_config(get_config() or {})
+USE_HL = _hedge_cfg["exchange"] == "hyperliquid"
+
 # Configuration
 SUBSCRIPTION_RETRIES = 3
 SUBSCRIPTION_RETRY_DELAY = 2  # seconds
 LISTENER_RETRIES = 3
 LISTENER_RETRY_DELAY = 2  # seconds
+HL_POLL_INTERVAL = 10  # seconds between OPMS status polls
 
 async def send_telegram_alert(message):
     """Send alert message to configured Telegram channel asynchronously."""
@@ -199,6 +205,38 @@ async def handle_order_update(order_data):
             f"Error: {str(e)}"
         )
 
+async def poll_hl_orders(active_orders: dict) -> None:
+    """Poll OPMS until all submitted HL strategies reach a terminal state.
+
+    active_orders: {strategy_id: order_data_dict}
+    Mutates the dict in-place, removing resolved entries.
+    """
+    while active_orders:
+        await asyncio.sleep(HL_POLL_INTERVAL)
+        for strategy_id in list(active_orders.keys()):
+            order_data = active_orders[strategy_id]
+            try:
+                status_info = await order_sender.poll_status(strategy_id)
+                updated = {
+                    **order_data,
+                    "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "orderId": strategy_id,
+                    "status": status_info["status"],
+                    "fillPercentage": status_info["fillPercentage"],
+                    "avgPrice": status_info["avgPrice"],
+                }
+                await update_order_monitor_csv(updated, match_by_token_action=False)
+
+                if status_info["status"] in ("SUCCESS", "EXECUTION_ERROR"):
+                    await handle_order_update(updated)
+                    del active_orders[strategy_id]
+                    logger.info(
+                        f"HL strategy {strategy_id} resolved: {status_info['status']}"
+                    )
+            except Exception as e:
+                logger.error(f"Error polling HL strategy {strategy_id}: {e}")
+
+
 async def process_auto_hedge():
     """Process auto-hedge actions from AUTOMATIC_ORDER_MONITOR_CSV."""
     logger.info("Starting auto-hedge process...")
@@ -237,28 +275,31 @@ async def process_auto_hedge():
             logger.info("No orders available in AUTOMATIC_ORDER_MONITOR_CSV.")
             return
 
-        listener_started = False
-        for attempt in range(LISTENER_RETRIES):
-            try:
-                await ws_manager.start_listener(handle_order_update)
-                logger.info("WebSocket listener started")
-                listener_started = True
-                break
-            except Exception as e:
-                logger.warning(f"Failed to start WebSocket listener (attempt {attempt + 1}): {e}")
+        if not USE_HL:
+            listener_started = False
+            for attempt in range(LISTENER_RETRIES):
+                try:
+                    await ws_manager.start_listener(handle_order_update)
+                    logger.info("WebSocket listener started")
+                    listener_started = True
+                    break
+                except Exception as e:
+                    logger.warning(f"Failed to start WebSocket listener (attempt {attempt + 1}): {e}")
+                    await send_telegram_alert(
+                        f"Auto-Hedge Warning:\n"
+                        f"WebSocket listener failed to start (attempt {attempt + 1}): {str(e)}"
+                    )
+                    if attempt < LISTENER_RETRIES - 1:
+                        await asyncio.sleep(LISTENER_RETRY_DELAY)
+            if not listener_started:
+                logger.error(f"Failed to start WebSocket listener after {LISTENER_RETRIES} attempts")
                 await send_telegram_alert(
-                    f"Auto-Hedge Warning:\n"
-                    f"WebSocket listener failed to start (attempt {attempt + 1}): {str(e)}"
+                    f"Auto-Hedge Error:\n"
+                    f"Failed to start WebSocket listener after {LISTENER_RETRIES} attempts"
                 )
-                if attempt < LISTENER_RETRIES - 1:
-                    await asyncio.sleep(LISTENER_RETRY_DELAY)
-        if not listener_started:
-            logger.error(f"Failed to start WebSocket listener after {LISTENER_RETRIES} attempts")
-            await send_telegram_alert(
-                f"Auto-Hedge Error:\n"
-                f"Failed to start WebSocket listener after {LISTENER_RETRIES} attempts"
-            )
-            return
+                return
+
+        hl_active_orders: dict = {}  # strategy_id → order_data (HL only)
 
         for index, row in df.iterrows():
             token = row["Token"]
@@ -268,7 +309,7 @@ async def process_auto_hedge():
             order_id = row.get("orderId", "")
 
             if current_status == "EXECUTING" and pd.notna(order_id) and order_id:
-                logger.info(f"Order for {token} already submitted with ID {order_id}, subscribing to updates")
+                logger.info(f"Order for {token} already submitted with ID {order_id}, resuming monitoring")
                 order_data = {
                     "Timestamp": row["Timestamp"],
                     "Token": token,
@@ -279,39 +320,43 @@ async def process_auto_hedge():
                     "fillPercentage": float(row["fillPercentage"]),
                     "avgPrice": float(row.get("avgPrice", 0.0))
                 }
-                subscribed = False
-                for attempt in range(SUBSCRIPTION_RETRIES):
-                    try:
-                        await ws_manager.subscribe_order(order_data)
-                        logger.info(f"Successfully subscribed to existing order {order_id} for {token}")
-                        subscribed = True
-                        break
-                    except Exception as sub_e:
-                        logger.warning(f"Subscription attempt {attempt + 1} failed for {order_id}: {sub_e}")
+                if USE_HL:
+                    hl_active_orders[order_id] = order_data
+                    logger.info(f"Resumed HL polling for existing strategy {order_id}")
+                else:
+                    subscribed = False
+                    for attempt in range(SUBSCRIPTION_RETRIES):
+                        try:
+                            await ws_manager.subscribe_order(order_data)
+                            logger.info(f"Successfully subscribed to existing order {order_id} for {token}")
+                            subscribed = True
+                            break
+                        except Exception as sub_e:
+                            logger.warning(f"Subscription attempt {attempt + 1} failed for {order_id}: {sub_e}")
+                            await send_telegram_alert(
+                                f"Auto Order Monitoring Warning:\n"
+                                f"Token: {token}\n"
+                                f"Order ID: {order_id}\n"
+                                f"Warning: WebSocket subscription failed (attempt {attempt + 1}): {sub_e}"
+                            )
+                            if attempt < SUBSCRIPTION_RETRIES - 1:
+                                await asyncio.sleep(SUBSCRIPTION_RETRY_DELAY)
+                    if not subscribed:
+                        logger.error(f"Failed to subscribe to order {order_id} after {SUBSCRIPTION_RETRIES} attempts")
                         await send_telegram_alert(
-                            f"Auto Order Monitoring Warning:\n"
+                            f"Auto Order Monitoring Error:\n"
                             f"Token: {token}\n"
                             f"Order ID: {order_id}\n"
-                            f"Warning: WebSocket subscription failed (attempt {attempt + 1}): {sub_e}"
+                            f"Error: Failed to subscribe to WebSocket after {SUBSCRIPTION_RETRIES} attempts"
                         )
-                        if attempt < SUBSCRIPTION_RETRIES - 1:
-                            await asyncio.sleep(SUBSCRIPTION_RETRY_DELAY)
-                if not subscribed:
-                    logger.error(f"Failed to subscribe to order {order_id} after {SUBSCRIPTION_RETRIES} attempts")
-                    await send_telegram_alert(
-                        f"Auto Order Monitoring Error:\n"
-                        f"Token: {token}\n"
-                        f"Order ID: {order_id}\n"
-                        f"Error: Failed to subscribe to WebSocket after {SUBSCRIPTION_RETRIES} attempts"
-                    )
-                    order_data.update({
-                        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "status": "EXECUTION_ERROR",
-                        "fillPercentage": 0.0,
-                        "avgPrice": 0.0
-                    })
-                    await update_order_monitor_csv(order_data, match_by_token_action=False)
-                    await handle_order_update(order_data)
+                        order_data.update({
+                            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "status": "EXECUTION_ERROR",
+                            "fillPercentage": 0.0,
+                            "avgPrice": 0.0
+                        })
+                        await update_order_monitor_csv(order_data, match_by_token_action=False)
+                        await handle_order_update(order_data)
                 continue
 
             if current_status != "RECEIVED":
@@ -399,56 +444,63 @@ async def process_auto_hedge():
                         break
 
             if success:
-                subscribed = False
-                for attempt in range(SUBSCRIPTION_RETRIES):
-                    try:
-                        await asyncio.sleep(2)
-                        await ws_manager.subscribe_order(order_data)
-                        logger.info(f"Successfully subscribed to order {order_id} for {token}")
-                        subscribed = True
-                        break
-                    except Exception as sub_e:
-                        logger.warning(f"Subscription attempt {attempt + 1} failed for {order_id}: {sub_e}")
+                if USE_HL:
+                    hl_active_orders[order_id] = order_data
+                    logger.info(f"HL strategy {order_id} queued for polling")
+                else:
+                    subscribed = False
+                    for attempt in range(SUBSCRIPTION_RETRIES):
+                        try:
+                            await asyncio.sleep(2)
+                            await ws_manager.subscribe_order(order_data)
+                            logger.info(f"Successfully subscribed to order {order_id} for {token}")
+                            subscribed = True
+                            break
+                        except Exception as sub_e:
+                            logger.warning(f"Subscription attempt {attempt + 1} failed for {order_id}: {sub_e}")
+                            await send_telegram_alert(
+                                f"Auto Order Monitoring Warning:\n"
+                                f"Token: {token}\n"
+                                f"Order ID: {order_id}\n"
+                                f"Warning: WebSocket subscription failed (attempt {attempt + 1}): {sub_e}"
+                            )
+                            if attempt < SUBSCRIPTION_RETRIES - 1:
+                                await asyncio.sleep(SUBSCRIPTION_RETRY_DELAY)
+                    if not subscribed:
+                        logger.error(f"Failed to subscribe to order {order_id} after {SUBSCRIPTION_RETRIES} attempts")
                         await send_telegram_alert(
-                            f"Auto Order Monitoring Warning:\n"
+                            f"Auto Order Monitoring Error:\n"
                             f"Token: {token}\n"
                             f"Order ID: {order_id}\n"
-                            f"Warning: WebSocket subscription failed (attempt {attempt + 1}): {sub_e}"
+                            f"Error: Failed to subscribe to WebSocket after {SUBSCRIPTION_RETRIES} attempts"
                         )
-                        if attempt < SUBSCRIPTION_RETRIES - 1:
-                            await asyncio.sleep(SUBSCRIPTION_RETRY_DELAY)
-                if not subscribed:
-                    logger.error(f"Failed to subscribe to order {order_id} after {SUBSCRIPTION_RETRIES} attempts")
-                    await send_telegram_alert(
-                        f"Auto Order Monitoring Error:\n"
-                        f"Token: {token}\n"
-                        f"Order ID: {order_id}\n"
-                        f"Error: Failed to subscribe to WebSocket after {SUBSCRIPTION_RETRIES} attempts"
-                    )
-                    order_data.update({
-                        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "status": "EXECUTION_ERROR",
-                        "fillPercentage": 0.0,
-                        "avgPrice": 0.0
-                    })
-                    await update_order_monitor_csv(order_data, match_by_token_action=False)
-                    await handle_order_update(order_data)
+                        order_data.update({
+                            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "status": "EXECUTION_ERROR",
+                            "fillPercentage": 0.0,
+                            "avgPrice": 0.0
+                        })
+                        await update_order_monitor_csv(order_data, match_by_token_action=False)
+                        await handle_order_update(order_data)
 
         logger.info("Waiting for all orders to be resolved...")
-        while True:
-            try:
-                if not AUTOMATIC_ORDER_MONITOR_CSV.exists():
-                    logger.info("Order monitor CSV no longer exists, all orders processed.")
-                    break
-                df = pd.read_csv(AUTOMATIC_ORDER_MONITOR_CSV)
-                if df.empty:
-                    logger.info("All orders resolved.")
-                    break
-                logger.info(f"Pending orders: {len(df)}")
-                await asyncio.sleep(5)
-            except Exception as e:
-                logger.error(f"Error checking orders: {e}")
-                await asyncio.sleep(5)
+        if USE_HL:
+            await poll_hl_orders(hl_active_orders)
+        else:
+            while True:
+                try:
+                    if not AUTOMATIC_ORDER_MONITOR_CSV.exists():
+                        logger.info("Order monitor CSV no longer exists, all orders processed.")
+                        break
+                    df = pd.read_csv(AUTOMATIC_ORDER_MONITOR_CSV)
+                    if df.empty:
+                        logger.info("All orders resolved.")
+                        break
+                    logger.info(f"Pending orders: {len(df)}")
+                    await asyncio.sleep(5)
+                except Exception as e:
+                    logger.error(f"Error checking orders: {e}")
+                    await asyncio.sleep(5)
 
     except (OSError, pd.errors.EmptyDataError) as e:
         logger.error(f"Error accessing {AUTOMATIC_ORDER_MONITOR_CSV}: {e}")
@@ -466,7 +518,8 @@ async def main():
         logger.error(f"Main error: {e}")
         await send_telegram_alert(f"Auto-Hedge Main Error:\nError: {str(e)}")
     finally:
-        await ws_manager.stop_listener()
+        if not USE_HL:
+            await ws_manager.stop_listener()
         await order_manager.close()
 
 if __name__ == "__main__":

@@ -78,11 +78,13 @@ def _get_exchange_credentials(exchange_id: str) -> dict[str, str]:
 def _normalize_symbol_to_usdt(symbol: str) -> str:
     """
     Convert unified or raw symbol strings to BASEUSDT format.
+    Treats USDC and USDT as equivalent (1:1).
 
     Examples:
-    - BTC/USDT -> BTCUSDT
     - BTC/USDT:USDT -> BTCUSDT
+    - BTC/USDC:USDC -> BTCUSDT  (Hyperliquid)
     - BTCUSDT -> BTCUSDT
+    - BTCUSDC -> BTCUSDT
     """
     s = (symbol or "").upper()
     if not s:
@@ -91,22 +93,29 @@ def _normalize_symbol_to_usdt(symbol: str) -> str:
     if "/" in s:
         base, quote_part = s.split("/", 1)
         quote = quote_part.split(":", 1)[0]
-        if quote == "USDT":
+        if quote in ("USDT", "USDC"):
             return f"{base}USDT"
         return ""
 
     if s.endswith("USDT"):
         return s
+    if s.endswith("USDC"):
+        return s[:-4] + "USDT"
 
     return ""
 
 
-def _unified_symbol(raw_symbol: str) -> str:
-    """Convert BASEUSDT into BASE/USDT:USDT unified perpetual notation."""
+def _unified_symbol(raw_symbol: str, exchange_id: str = "") -> str:
+    """Convert BASEUSDT into unified perpetual notation for the given exchange.
+    Hyperliquid uses BASE/USDC:USDC; all others use BASE/USDT:USDT.
+    """
     symbol = (raw_symbol or "").upper()
-    if not symbol.endswith("USDT"):
+    if symbol.endswith("USDT") or symbol.endswith("USDC"):
+        base = symbol[:-4]
+    else:
         return symbol
-    base = symbol[:-4]
+    if exchange_id.lower() == "hyperliquid":
+        return f"{base}/USDC:USDC"
     return f"{base}/USDT:USDT"
 
 
@@ -145,8 +154,9 @@ class CcxtHedgeMarket:
     async def fetch_usdt_perp_symbols(self) -> list[str]:
         markets = await self._exchange.load_markets()
         symbols: list[str] = []
+        valid_quotes = {"USDT", "USDC"} if self.exchange_id == "hyperliquid" else {"USDT"}
         for market in markets.values():
-            if market.get("quote") != "USDT":
+            if market.get("quote") not in valid_quotes:
                 continue
             if not market.get("swap", False):
                 continue
@@ -191,6 +201,6 @@ class CcxtHedgeMarket:
         return result
 
     async def fetch_funding_rate(self, symbol: str) -> float:
-        unified = _unified_symbol(symbol)
+        unified = _unified_symbol(symbol, self.exchange_id)
         data = await self._exchange.fetch_funding_rate(unified)
         return float(data.get("fundingRate") or 0.0)

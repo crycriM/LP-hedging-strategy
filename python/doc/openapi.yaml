@@ -1,0 +1,931 @@
+openapi: 3.1.0
+info:
+  title: OPMS - Order & Position Management System
+  description: |
+    Smart order execution service for decentralized exchanges.
+    
+    ## Exchange Account Configuration
+    
+    Accounts are configured via environment variables using the naming convention:
+    ```
+    {EXCHANGE}_{ACCOUNT_ID}_{CREDENTIAL_TYPE}
+    ```
+    
+    ### Hyperliquid
+    - `HYPERLIQUID_{ACCOUNT_ID}_PRIVATE_KEY` - Wallet private key
+    - `HYPERLIQUID_{ACCOUNT_ID}_ACCOUNT_ADDRESS` - Wallet address
+    - `HYPERLIQUID_{ACCOUNT_ID}_IS_TESTNET` - true/false (default: true)
+    
+    Example:
+    ```
+    export HYPERLIQUID_MAIN_PRIVATE_KEY="0x..."
+    export HYPERLIQUID_MAIN_ACCOUNT_ADDRESS="0x..."
+    export HYPERLIQUID_MAIN_IS_TESTNET="true"
+    ```
+    
+    ### Lighter DEX
+    - `LIGHTER_{ACCOUNT_ID}_PRIVATE_KEY` - Wallet private key
+    - `LIGHTER_{ACCOUNT_ID}_IS_TESTNET` - true/false (default: true)
+    
+    Example:
+    ```
+    export LIGHTER_TEST_PRIVATE_KEY="0x..."
+    export LIGHTER_TEST_IS_TESTNET="true"
+    ```
+  version: 0.1.0
+  contact:
+    name: OPMS Team
+    email: team@opms.dev
+servers:
+  - url: http://localhost:8000
+    description: Local development server
+  - url: https://api.opms.dev
+    description: Production server
+paths:
+  /health:
+    get:
+      summary: Health Check
+      description: Check if the service is running and all components are initialized
+      operationId: health_check
+      responses:
+        "200":
+          description: Service is healthy and ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: healthy
+                running_strategies: 0
+                timestamp: "2024-02-12T10:30:45.123Z"
+
+  /api/v1/exchanges:
+    get:
+      summary: List Supported Exchanges
+      description: Get list of all supported exchange types
+      operationId: list_exchanges
+      responses:
+        "200":
+          description: List of supported exchanges
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportedExchangesResponse"
+
+  /api/v1/exchanges/{exchange}/accounts:
+    get:
+      summary: List Exchange Accounts
+      description: Get all configured accounts for a specific exchange
+      operationId: list_exchange_accounts
+      parameters:
+        - name: exchange
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [hyperliquid, lighter, mock]
+          description: Exchange type identifier
+          example: hyperliquid
+      responses:
+        "200":
+          description: List of configured accounts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExchangeAccountsResponse"
+        "400":
+          description: Unsupported exchange
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/accounts/{account_id}/positions:
+    get:
+      summary: Get Account Positions
+      description: Get all open positions for an account
+      operationId: get_account_positions
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Account identifier
+          example: main
+      responses:
+        "200":
+          description: List of positions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Position"
+        "404":
+          description: Account not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/accounts/{account_id}/balance:
+    get:
+      summary: Get Account Balance
+      description: Get account balance and equity
+      operationId: get_account_balance
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Account identifier
+          example: main
+      responses:
+        "200":
+          description: Account balance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BalanceResponse"
+        "404":
+          description: Account not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/accounts/{account_id}/l1/{symbol}:
+    get:
+      summary: Get L1 Order Book
+      description: Get best bid/ask for a symbol
+      operationId: get_l1_orderbook
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Account identifier
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Trading pair symbol
+          example: ETH
+      responses:
+        "200":
+          description: L1 order book data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/L1OrderBookData"
+        "404":
+          description: Symbol not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/strategies:
+    get:
+      summary: List All Strategies
+      description: Get all strategies with optional filtering by status
+      operationId: list_strategies
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [created, running, paused, completed, failed, cancelled]
+          description: Filter strategies by status
+        - name: exchange_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [hyperliquid, lighter, mock]
+          description: Filter strategies by exchange type
+        - name: account_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter strategies by account
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+          description: Maximum number of results to return
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Offset for pagination
+      responses:
+        "200":
+          description: List of strategies
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListStrategiesResponse"
+    post:
+      summary: Create Strategy
+      description: Create a new execution strategy in pending state
+      operationId: create_strategy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StrategyCreate"
+            example:
+              name: "ETH Buy Strategy"
+              exchange_type: "hyperliquid"
+              account_id: "main"
+              symbol: "ETH"
+              side: "buy"
+              total_quantity: "0.1"
+              child_order_quantity: "0.01"
+              child_order_time_step: 60.0
+              child_order_refresh_time: 20.0
+      responses:
+        "201":
+          description: Strategy created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StrategyResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+        "404":
+          description: Account not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/strategies/{strategy_id}:
+    get:
+      summary: Get Strategy Details
+      description: Get detailed information about a specific strategy
+      operationId: get_strategy
+      parameters:
+        - name: strategy_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Unique strategy identifier (UUID)
+          example: 550e8400-e29b-41d4-a716-446655440000
+      responses:
+        "200":
+          description: Strategy details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StrategyResponse"
+        "404":
+          description: Strategy not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Delete Strategy
+      description: Delete a strategy permanently (only for terminal states)
+      operationId: delete_strategy
+      parameters:
+        - name: strategy_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Unique strategy identifier (UUID)
+      responses:
+        "204":
+          description: Strategy deleted successfully
+        "400":
+          description: Cannot delete - strategy is still active
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Strategy not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/strategies/{strategy_id}/status:
+    get:
+      summary: Get Strategy Status
+      description: Get lightweight status information (optimized for polling)
+      operationId: get_strategy_status
+      parameters:
+        - name: strategy_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Unique strategy identifier (UUID)
+      responses:
+        "200":
+          description: Strategy status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StrategyStatusResponse"
+        "404":
+          description: Strategy not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/strategies/{strategy_id}/start:
+    post:
+      summary: Start Strategy
+      description: Begin executing a strategy (must be in pending state)
+      operationId: start_strategy
+      parameters:
+        - name: strategy_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Unique strategy identifier (UUID)
+      responses:
+        "200":
+          description: Strategy started successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StartStrategyResponse"
+        "400":
+          description: Cannot start - strategy already running or in invalid state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Strategy not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/strategies/{strategy_id}/stop:
+    post:
+      summary: Stop Strategy
+      description: Stop a running strategy (cancels pending orders)
+      operationId: stop_strategy
+      parameters:
+        - name: strategy_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Unique strategy identifier (UUID)
+      responses:
+        "200":
+          description: Strategy stopped successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StopStrategyResponse"
+        "400":
+          description: Cannot stop - strategy is not running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Strategy not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/ws/strategies/{strategy_id}:
+    get:
+      summary: WebSocket - Strategy Updates
+      description: |
+        Subscribe to real-time strategy execution updates.
+        
+        Event types:
+        - `status_change` - Strategy status changed
+        - `order_placed` - Child order was placed
+        - `order_cancelled` - Child order was cancelled
+        - `fill` - Order was filled (partial or complete)
+        - `error` - Error occurred during execution
+        
+        Message format:
+        ```json
+        {
+          "type": "fill",
+          "strategy_id": "550e8400-e29b-41d4-a716-446655440000",
+          "timestamp": "2024-02-12T10:30:45.123Z",
+          "data": {
+            "order_id": "0x123...",
+            "incremental_quantity": "0.01",
+            "total_filled_quantity": "0.01",
+            "price": "2500.50",
+            "cumulative_filled": "0.03",
+            "total_quantity": "0.1",
+            "progress_percent": 30.0
+          }
+        }
+        ```
+      operationId: subscribe_strategy
+      parameters:
+        - name: strategy_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Unique strategy identifier (UUID)
+      responses:
+        "101":
+          description: Switching protocols (WebSocket handshake successful)
+
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - running_strategies
+        - timestamp
+      properties:
+        status:
+          type: string
+          enum: [healthy, unhealthy]
+          description: Overall service health
+        running_strategies:
+          type: integer
+          description: Number of currently running strategies
+        timestamp:
+          type: string
+          format: date-time
+          description: Response timestamp
+
+    SupportedExchangesResponse:
+      type: object
+      required:
+        - exchanges
+      properties:
+        exchanges:
+          type: array
+          items:
+            type: string
+            enum: [hyperliquid, lighter, mock]
+          description: List of supported exchange types
+
+    ExchangeAccountsResponse:
+      type: object
+      required:
+        - exchange
+        - accounts
+      properties:
+        exchange:
+          type: string
+          description: Exchange type
+        accounts:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccountInfo"
+
+    AccountInfo:
+      type: object
+      required:
+        - exchange
+        - account_id
+        - is_testnet
+        - has_credentials
+      properties:
+        exchange:
+          type: string
+          description: Exchange type
+        account_id:
+          type: string
+          description: Account identifier
+        is_testnet:
+          type: boolean
+          description: Whether this is a testnet account
+        has_credentials:
+          type: boolean
+          description: Whether credentials are configured
+
+    BalanceResponse:
+      type: object
+      required:
+        - available
+        - total
+        - currency
+      properties:
+        available:
+          type: string
+          description: Available balance
+        total:
+          type: string
+          description: Total equity including positions
+        currency:
+          type: string
+          description: Currency symbol
+
+    L1OrderBookData:
+      type: object
+      required:
+        - symbol
+        - bid
+        - ask
+        - bid_size
+        - ask_size
+      properties:
+        symbol:
+          type: string
+          description: Trading pair symbol
+        bid:
+          type: string
+          description: Best bid price
+        ask:
+          type: string
+          description: Best ask price
+        bid_size:
+          type: string
+          description: Size at best bid
+        ask_size:
+          type: string
+          description: Size at best ask
+
+    Position:
+      type: object
+      required:
+        - symbol
+        - side
+        - quantity
+        - entry_price
+        - unrealized_pnl
+        - account_id
+      properties:
+        symbol:
+          type: string
+          example: ETH
+          description: Trading pair symbol
+        side:
+          type: string
+          enum: [long, short]
+          description: Position side
+        quantity:
+          type: string
+          example: "1.5"
+          description: Position size as decimal string
+        entry_price:
+          type: string
+          example: "2500.00"
+          description: Average entry price as decimal string
+        unrealized_pnl:
+          type: string
+          example: "150.25"
+          description: Current unrealized P&L as decimal string
+        account_id:
+          type: string
+          example: main
+          description: Associated account identifier
+
+    StrategyResponse:
+      type: object
+      required:
+        - strategy_id
+        - name
+        - exchange_type
+        - account_id
+        - symbol
+        - side
+        - total_quantity
+        - status
+        - child_order_quantity
+        - child_order_time_step
+        - child_order_refresh_time
+        - created_at
+      properties:
+        strategy_id:
+          type: string
+          format: uuid
+          description: Unique strategy identifier
+        name:
+          type: string
+          example: ETH Buy Strategy
+          description: Human-readable strategy name
+        exchange_type:
+          type: string
+          enum: [hyperliquid, lighter, mock]
+          description: Exchange type for execution
+        account_id:
+          type: string
+          example: main
+          description: Trading account ID (references environment variables)
+        symbol:
+          type: string
+          example: ETH
+          description: Trading pair symbol
+        side:
+          type: string
+          enum: [buy, sell]
+          description: Strategy side
+        total_quantity:
+          type: string
+          example: "0.1"
+          description: Total size to execute as decimal string
+        filled_quantity:
+          type: string
+          example: "0.03"
+          description: Amount executed so far as decimal string
+        average_fill_price:
+          type: string
+          example: "2500.50"
+          nullable: true
+          description: Average fill price as decimal string
+        status:
+          type: string
+          enum: [created, running, paused, completed, failed, cancelled]
+          description: Strategy execution status
+        progress_percent:
+          type: number
+          example: 30.0
+          description: Execution progress percentage (0-100)
+        child_order_quantity:
+          type: string
+          example: "0.01"
+          description: Size of each child order as decimal string
+        child_order_time_step:
+          type: number
+          example: 60.0
+          description: Cycle time between child orders in seconds
+        child_order_refresh_time:
+          type: number
+          example: 20.0
+          description: Refresh time in seconds
+        current_child_number:
+          type: integer
+          example: type for execution
+
+    ListStrategiesResponse:
+      type: object
+      required:
+        - strategies
+        - total
+        - page
+        - page_size
+      properties:
+        strategies:
+          type: array
+          items:
+            $ref: "#/components/schemas/StrategyResponse"
+        total:
+          type: integer
+          description: Total number of strategies
+        page:
+          type: integer
+          description: Current page number
+        page_size:
+          type: integer
+          description: Page size
+
+    StrategyStatusResponse:
+      type: object
+      required:
+        - strategy_id
+        - status
+        - filled_quantity
+        - total_quantity
+        - progress_percent
+        - current_child_number
+        - updated_at
+      properties:
+        strategy_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [created, running, paused, completed, failed, cancelled]
+        filled_quantity:
+          type: string
+        total_quantity:
+          type: string
+        progress_percent:
+          type: number
+        current_child_number:
+          type: integer
+        updated_at:
+          type: string
+          format: date-time
+
+    StartStrategyResponse:
+      type: object
+      required:
+        - strategy_id
+        - status
+        - message
+      properties:
+        strategy_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [created, running, paused, completed, failed, cancelled]
+        message:
+          type: string
+
+    StopStrategyResponse:
+      type: object
+      required:
+        - strategy_id
+        - status
+        - message
+      properties:
+        strategy_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [created, running, paused, completed, failed, cancelled]
+        message:
+          type: string
+
+    Error:
+      type: object
+      required:
+        - detail
+      properties:
+        detail:
+          type: string
+          description: Error message describing what went wrong
+        strategy_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Related strategy ID (if applicable)
+
+    ValidationError:
+      type: object
+      required:
+        - detail
+      properties:
+        detail:
+          type: array
+          items:
+            type: object
+            properties:
+              loc:
+                type: array
+                items:
+                  type: string
+                description: Field location path
+              msg:
+                type: string
+                description: Error message
+              type:
+                type: string
+                description: Error type
+
+    WebSocketMessage:
+      type: object
+      required:
+        - type
+        - strategy_id
+        - timestamp
+        - data
+      properties:
+        type:
+          type: string
+          enum: [status_change, order_placed, order_cancelled, fill, error]
+          description: Message type
+        strategy_id:
+          type: string
+          format: uuid
+          description: Strategy identifier
+        timestamp:
+          type: string
+          format: date-time
+          description: Event timestamp
+        data:
+          type: object
+          description: Event-specific data
+
+    WebSocketFillData:
+      type: object
+      required:
+        - order_id
+        - incremental_quantity
+        - total_filled_quantity
+        - price
+        - cumulative_filled
+        - total_quantity
+        - progress_percent
+      properties:
+        order_id:
+          type: string
+          description: Exchange order identifier
+        incremental_quantity:
+          type: string
+          description: Quantity filled in this fill
+        total_filled_quantity:
+          type: string
+          description: Total filled for this order
+        price:
+          type: string
+          description: Fill price
+        cumulative_filled:
+          type: string
+          description: Cumulative filled for strategy
+        total_quantity:
+          type: string
+          description: Strategy total quantity
+        progress_percent:
+          type: number
+          description: Execution progress percentage
+
+    WebSocketOrderData:
+      type: object
+      required:
+        - order_id
+        - quantity
+        - price
+        - side
+        - child_number
+      properties:
+        order_id:
+          type: string
+          description: Exchange order identifier
+        quantity:
+          type: string
+          description: Order quantity
+        price:
+          type: string
+          description: Order price
+        side:
+          type: string
+          enum: [buy, sell]
+          description: Order side
+        child_number:
+          type: integer
+          description: Child order number in sequence
+
+    WebSocketStatusChangeData:
+      type: object
+      required:
+        - old_status
+        - new_status
+      properties:
+        old_status:
+          type: string
+          enum: [created, running, paused, completed, failed, cancelled]
+          description: Previous status
+        new_status:
+          type: string
+          enum: [created, running, paused, completed, failed, cancelled]
+          description: New status
+        message:
+          type: string
+          nullable: true
+          description: Optional status change message
+
+    WebSocketErrorData:
+      type: object
+      required:
+        - error_type
+        - error_message
+        - recoverable
+      properties:
+        error_type:
+          type: string
+          description: Error type/category
+        error_message:
+          type: string
+          description: Human-readable error description
+        recoverable:
+          type: boolean
+          description: Whether the error is recoverable

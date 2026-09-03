@@ -18,10 +18,6 @@ alerts, and a visualization webapp.
 - Compulsory virtual env: the Python side must run in its own dedicated `.venv` (never global Python).
   The TypeScript side manages deps via its own `package.json`/`node_modules` in `lp-monitor/`.
 - This repo is separate from the amm-solution MM brain: do not introduce shared-brain coupling;
-  `PONYTAIL-DEBT.md` at the monorepo root captures related debt — read it.
-- Editing: prefer `patch` with unique context over `write_file`. Re-read the file first; patch hallucinates old_string often.
-- When prompting for selection, list items numbered (1, 2, 3...). Never ask more than one yes/no question.
-- Safety-first: reversible actions only (trash > rm). Scientific rigor: verify everything, never guess. Minimalist and lean.
+  `PONYTAIL-DEBT.md` at the solution root captures related debt — read it.
 - Secrets/keys/wallet config stay in env/config files, never committed. Hedging touches real funds:
   validate orders and thresholds before placing; direct infra changes ask first, or give the exact sudo command.
-- Communication: concise, terse, English only. "y" = go ahead — don't second-guess.
